@@ -89,9 +89,9 @@ NTSTATUS LoadKernelFile(IN PUNICODE_STRING pKrnlFullPath, IN ULONG uKrnlImageSiz
 	if (STATUS_SUCCESS != status)
 	{
 		DbgPrint("打开文件失败\n");
-		DbgPrint("%X\t\n", StatusBlock.Status);
-		DbgPrint("%X\t\n", status);
-		DbgPrint("%X\t\n", hFile);
+		//DbgPrint("%X\t\n", StatusBlock.Status);
+		//DbgPrint("%X\t\n", status);
+		//DbgPrint("%X\t\n", hFile);
 		return status;
 	}
 
@@ -213,7 +213,9 @@ NTSTATUS GetModuleBase(IN PDRIVER_OBJECT pDriver, IN PUNICODE_STRING pModuleName
 BOOLEAN AddressIsExecuteable(IN ULONG pAddress, IN PIMAGE_SECTION_HEADER pSectionHeader, IN ULONG ulSectionNum)
 {
 	BOOLEAN bFlag = FALSE;
-	
+
+
+
 	//循环判断数据在哪个节中
 	for (int t = 0; t < ulSectionNum; t++)
 	{
@@ -230,15 +232,22 @@ BOOLEAN AddressIsExecuteable(IN ULONG pAddress, IN PIMAGE_SECTION_HEADER pSectio
 		//判断
 		if (pAddress >= Begin && pAddress <= End)
 		{
-			bFlag = ((pSectionHeader[t].Characteristics & 0x20000020) == 0x20000020) ? TRUE : FALSE;
+			// 只修复 .text 节区
+			if (strcmp(pSectionHeader[t].Name, ".text") == 0)
+			{
+				//DbgPrint("pSectionHeader[t].Name:[%s]\t\n", pSectionHeader[t].Name);
+				//__asm int 3;
+				return TRUE;
+			}
+
+			// bFlag = ((pSectionHeader[t].Characteristics & 0x20000020) == 0x20000020) ? TRUE : FALSE;
 
 			return bFlag;
 		}
 	}
-	DbgPrint("pAddress:[%X] not in the section \t\n", pAddress);
+	//DbgPrint("pAddress:[%X] not in the section \t\n", pAddress);
 	return bFlag;
 }
-
 
 NTSTATUS RepairRelocation(IN OUT PVOID pKernelImageBuffer, IN ULONG KernelBase)
 {
@@ -255,9 +264,9 @@ NTSTATUS RepairRelocation(IN OUT PVOID pKernelImageBuffer, IN ULONG KernelBase)
 	PIMAGE_FILE_HEADER pFileHeader = (PIMAGE_FILE_HEADER)((ULONG)pNtHeader + 4);
 	PIMAGE_OPTIONAL_HEADER pOptionHeader = (PIMAGE_OPTIONAL_HEADER)((ULONG)pFileHeader + (ULONG)IMAGE_SIZEOF_FILE_HEADER);
 	PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pNtHeader);
-	PIMAGE_BASE_RELOCATION pReloc = pOptionHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress + (ULONG)pDosHeader;
+	PIMAGE_BASE_RELOCATION pReloc = (PIMAGE_BASE_RELOCATION)(pOptionHeader->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress + (ULONG)pDosHeader);
 
-	ULONG Items = 0, Items1 = 0, Items2 = 0;
+	// ULONG Items = 0, Items1 = 0, Items2 = 0;
 
 	//  遍历重定位表，并对目标代码进行重定位
 	while (pReloc->SizeOfBlock && pReloc->VirtualAddress)
@@ -271,35 +280,39 @@ NTSTATUS RepairRelocation(IN OUT PVOID pKernelImageBuffer, IN ULONG KernelBase)
 
 		for (int i = 0; i < ulCount; i++)
 		{
-			// 需要重定位的数据位置 = ImageBase + VirtualAddress + TypeOffset低12位
+
 			if (pRelocationArray->Type == 3)
 			{
+				// 需要重定位的数据RVA = VirtualAddress + TypeOffset低12位
 				//获取要修改的地址的RVA
 				ULONG RepairAddrOffset = (ulRva + pRelocationArray->Offset);
+				PULONG pRepairAddr = (PULONG)(RepairAddrOffset + (ULONG)pKernelImageBuffer);
 
 				// 判断要修复的地址是否在
 				if (AddressIsExecuteable(RepairAddrOffset, pSectionHeader, pFileHeader->NumberOfSections))
 				{
-					PULONG pRepairAddr = (PULONG)(RepairAddrOffset + (ULONG)pKernelImageBuffer);
+					
 					//修正需要重定位项的在新内核中的值
-					*pRepairAddr += (ULONG)pKernelImageBuffer - KernelBase;
-					Items++;
-					Items1++;
+					*pRepairAddr += (ULONG)pKernelImageBuffer - pOptionHeader->ImageBase;
+
+					//Items++;
+					//Items1++;
 				}
 				else
 				{
 					// 不需要修复的值。 什么都不做就行。
 					//DbgPrint("FixAddress to Old Kernel:[%X]\t\n", *pRepairAddr);
-					Items++;
-					Items2++;
+					*pRepairAddr += KernelBase - pOptionHeader->ImageBase;
+					//Items++;
+					//Items2++;
 				}
-				
+
 			}
 			pRelocationArray++;
 		}
 		pReloc = (PIMAGE_BASE_RELOCATION)((ULONG)pReloc + pReloc->SizeOfBlock);
 	}
-	DbgPrint("Items: [%X],Items1: [%X], Items2: [%X]\t\n", Items, Items1, Items2);
+	//DbgPrint("Items: [%X],Items1: [%X], Items2: [%X]\t\n", Items, Items1, Items2);
 	return status;
 }
 
@@ -397,7 +410,7 @@ NTSTATUS RepairIAT(IN PDRIVER_OBJECT pDriver, IN OUT PVOID pKernelImageBuffer)
 			DbgPrint("RtlAnsiStringToUnicodeString failed!\t\n");
 			return status;
 		}
-		DbgPrint("usName:%ws\t\n", usName.Buffer);
+		// DbgPrint("usName:%ws\t\n", usName.Buffer);
 
 		// 获取模块基址
 		status = GetModuleBase(pDriver, &usName, &pModuleBase);
@@ -439,7 +452,7 @@ NTSTATUS RepairIAT(IN PDRIVER_OBJECT pDriver, IN OUT PVOID pKernelImageBuffer)
 					DbgPrint("1 GetFunAddrOfModule failed !\t\n");
 					return STATUS_UNSUCCESSFUL;
 				}
-				DbgPrint("1 dwProcAddress:%X\t\n", dwProcAddress);
+				// DbgPrint("1 dwProcAddress:%X\t\n", dwProcAddress);
 				*((PULONG)pThunkData) = dwProcAddress;
 			}
 			else
@@ -456,7 +469,7 @@ NTSTATUS RepairIAT(IN PDRIVER_OBJECT pDriver, IN OUT PVOID pKernelImageBuffer)
 					DbgPrint("2 GetFunAddrOfModule failed !\t\n");
 					return STATUS_UNSUCCESSFUL;
 				}
-				DbgPrint("2 dwProcAddress:%X\t\n", dwProcAddress);
+				// DbgPrint("2 dwProcAddress:%X\t\n", dwProcAddress);
 				*((PULONG)pThunkData) = dwProcAddress;
 			}
 			pThunkData++;
@@ -487,7 +500,7 @@ PKSYSTEM_SERVICE_TABLE InitNewSSDT(IN PVOID pKernelImageBuffer, IN ULONG uKernel
 	if (!MmIsAddressValid(pNewSSDT))
 	{
 		DbgPrint("pNewSSDT is unaviable!\r\n");
-		return;
+		return NULL;
 	}
 
 
@@ -499,16 +512,14 @@ PKSYSTEM_SERVICE_TABLE InitNewSSDT(IN PVOID pKernelImageBuffer, IN ULONG uKernel
 	// 依次遍历修改
 	for (ULONG uIndex = 0; uIndex < KeServiceDescriptorTable->NumberOfServices; uIndex++)
 	{
-		// 这里碰到了一个坑，我怀疑是修复重定位时的坑——————在执行修复重定位的代码前下了断点，查看了一下，8成的可能性。
-		// pNewSSDT->ServiceTableBase[uIndex] += uNewKernelInc;
-		// 函数地址再加上相对加载地址，得到新的的ssdt函数地址------这样写就不怕重定位代码问题了。
-		pNewSSDT->ServiceTableBase[uIndex] = KeServiceDescriptorTable->ServiceTableBase[uIndex] + uNewKernelInc;
+		// 函数地址再加上相对加载地址，得到新的的ssdt函数地址
+		pNewSSDT->ServiceTableBase[uIndex] += uNewKernelInc;		
 	}
 
 	if (!MmIsAddressValid(pNewSSDT->ServiceTableBase))
 	{
 		DbgPrint("pNewSSDT->ServiceTableBase: %X\r\n", pNewSSDT->ServiceTableBase);
-		return;
+		return NULL;
 	}
 
 	// 函数数量
@@ -624,8 +635,6 @@ VOID installHook()
 
 ULONG SSDTFilter(ULONG index, ULONG tableAddress, PULONG funAddr)
 {
-	
-	//DbgPrint("index:[%X],tableAddress:[%X],funAddr:[%X]\t\n", index, tableAddress, funAddr);
 	//__asm int 3;
 	// 如果是SSDT表的话
 	if (tableAddress == KeServiceDescriptorTable->ServiceTableBase)
@@ -634,14 +643,15 @@ ULONG SSDTFilter(ULONG index, ULONG tableAddress, PULONG funAddr)
 		// 判断调用号(0x&A是ZwOpenProcess函数的调用号)
 		if (index == 0x7A)
 		{
+			//DbgPrint("index:[%X],tableAddress:[%X],funAddr:[%X]\t\n", index, tableAddress, funAddr);
+			// __asm int 3;
 			// 返回新SSDT表的函数地址
 			// 也就是新内核的函数地址
-			DbgPrint("New\t\n");
 			return pNewSSDT->ServiceTableBase[0x7A];
 		}
 	}
 	// 返回旧的函数地址
-	return funAddr;
+	return (ULONG)funAddr;
 }
 
 void _declspec(naked) myKiFastEntryHook()
@@ -652,7 +662,7 @@ void _declspec(naked) myKiFastEntryHook()
 		pushfd; // 压栈标志寄存器
 
 
-		push edx; // 从表中取出的函数地址
+		push ebx; // 从表中取出的函数地址
 		push edi; // 表的地址
 		push eax; // 调用号
 		call SSDTFilter; // 调用过滤函数
@@ -665,11 +675,11 @@ void _declspec(naked) myKiFastEntryHook()
 		;// [esp + 08] <=> esi
 		;// [esp + 0C] <=> ebp
 		;// [esp + 10] <=> esp
-		;// [esp + 14] <=> ebx
-		;// [esp + 18] <=> edx <<-- 使用函数返回值来修改这个位置
+		;// [esp + 14] <=> ebx <<-- 使用函数返回值来修改这个位置
+		;// [esp + 18] <=> edx 
 		;// [esp + 1C] <=> ecx
 		;// [esp + 20] <=> eax
-		mov dword ptr ds : [esp + 0x18] , eax;
+		mov dword ptr ds : [esp + 0x14] , eax;
 		popfd; // popfd时,实际上edx的值就会被修改
 		popad;
 
